@@ -61,12 +61,16 @@ func getTaskRRs(domain string, t task.Task) []rrEntry {
 
 	// A record ("A service.domain. IP")
 	ip := t.Ports[0].HostIP.String() // use first port mapping's IP addr
-	l = append(l, rrEntry{dns.TypeA, fmt.Sprintf("%s.%s", t.Service, tail), ip})
+	for _, s := range t.Service {
+		l = append(l, rrEntry{dns.TypeA, fmt.Sprintf("%s.%s", s, tail), ip})
+	}
 
 	// SRV records for each port mapping ("SRV _service._tcp.domain. IP PORT")
 	for _, p := range t.Ports {
 		val := fmt.Sprintf("%s:%d", p.HostIP, p.HostPort)
-		l = append(l, rrEntry{dns.TypeSRV, fmt.Sprintf("_%s._%s.%s", t.Service, p.Proto, tail), val})
+		for _, s := range t.Service {
+			l = append(l, rrEntry{dns.TypeSRV, fmt.Sprintf("_%s._%s.%s", s, p.Proto, tail), val})
+		}
 	}
 	return l
 }

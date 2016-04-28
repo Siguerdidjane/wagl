@@ -55,7 +55,7 @@ func HasPorts(t task.Task) (bool, string) {
 }
 
 func HasDnsName(t task.Task) (bool, string) {
-	return t.Service != "", "has no DNS name specified (or not configured for DNS)"
+	return len(t.Service) > 0, "has no DNS name specified (or not configured for DNS)"
 }
 
 func PortsHaveProtos(t task.Task) (bool, string) {

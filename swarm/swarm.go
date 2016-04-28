@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,8 +18,8 @@ import (
 )
 
 const (
-	dnsLabel  = "dns.service"
-	dnsDomain = "dns.domain"
+	dnsLabelPattern = "^dns.service(\\.[0-9]+)?$"
+	dnsDomain       = "dns.domain"
 )
 
 var (
@@ -180,12 +181,19 @@ func containersToTasks(ll []container) ([]task.Task, error) {
 //
 // These labels are case insensitive and invalid characters (per DNS spec)
 // would cause no DNS records to be generated for these services.
-func dnsPartsFromLabels(labels map[string]string) (string, string) {
+func dnsPartsFromLabels(labels map[string]string) ([]string, string) {
 	var (
-		service = strings.ToLower(labels[dnsLabel])
 		project = strings.ToLower(labels[dnsDomain])
 	)
-	if service == "" { // does not make sense to have a project name w/o service
+	var service []string
+	r, _ := regexp.Compile(dnsLabelPattern)
+
+	for k, v := range labels {
+		if r.MatchString(k) {
+			service = append(service, v)
+		}
+	}
+	if len(service) == 0 { // does not make sense to have a project name w/o service
 		project = ""
 	}
 	return service, project
