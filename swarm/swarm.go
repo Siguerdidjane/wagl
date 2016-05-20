@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,10 +36,11 @@ type Swarm struct {
 // container represents a container item in /containers/json Endpoint of Docker
 // Remote API
 type container struct {
-	Id     string            `json:"Id"`
-	Ports  []containerPort   `json:"Ports"`
-	Names  []string          `json:"Names"`
-	Labels map[string]string `json:"Labels"`
+	Id              string            `json:"Id"`
+	Ports           []containerPort   `json:"Ports"`
+	Names           []string          `json:"Names"`
+	Labels          map[string]string `json:"Labels"`
+	NetworkSettings containerNetworks `json:"NetworkSettings"`
 }
 
 // containerPort represents a port declaration item as it appears in Docker
@@ -47,6 +50,30 @@ type containerPort struct {
 	PrivatePort int    `json:"PrivatePort"`
 	PublicPort  int    `json:"PublicPort"`
 	Type        string `json:"Type"`
+}
+
+// containerNetworks represent the list of different network associate to
+// the container
+type containerNetworks struct {
+	Networks map[string]interface{} `json:"Networks"`
+}
+
+type containerInfo struct {
+	HostConfig containerHostConfig `json:"HostConfig"`
+	Node       containerNodeConfig `json:"Node"`
+}
+
+type containerHostConfig struct {
+	PortBindings map[string][]containerHostPort `json:"PortBindings"`
+}
+
+type containerHostPort struct {
+	HostIp   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+
+type containerNodeConfig struct {
+	IP string `json:"IP"`
 }
 
 // New constructs a client to access a Docker Swarm cluster state. If the cluster
@@ -115,6 +142,27 @@ func (s *Swarm) Tasks() (task.ClusterState, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	for i, t := range out {
+		if len(t.Ports) == 0 && t.Networks["host"] != nil {
+			name := t.Names[0]
+			info, err := s.infoContainer(name)
+
+			if err != nil {
+				log.Printf("[%s] Unable to get info: %s", name, err)
+				continue
+			}
+
+			ports := containerInfoToPorts(*info)
+
+			if len(ports) > 0 {
+				log.Printf("[%s] Unable to get ports info: %s", name)
+				continue
+			}
+			out[i].Ports = ports
+		}
+	}
+
 	return out, err
 }
 
@@ -143,7 +191,38 @@ func (s *Swarm) listContainers() ([]container, error) {
 	if err := json.Unmarshal(data, &ll); err != nil {
 		return nil, fmt.Errorf("Error unmarshaling response: %v", err)
 	}
+
 	return ll, nil
+}
+
+func (s *Swarm) infoContainer(containerName string) (*containerInfo, error) {
+	url := strings.TrimSuffix(s.url.String(), "/")
+	if containerName == "" {
+		return nil, fmt.Errorf("container name is nil")
+	}
+	req, err := http.NewRequest("GET", url+"/containers/"+containerName+"/json?all=false", nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating the HTTP request: %v", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("Docker API error (Status: %d) Body: %q", resp.Status, data)
+	}
+
+	var info containerInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, fmt.Errorf("Error unmarshaling response: %v", err)
+	}
+	return &info, nil
 }
 
 // containersToTasks strips out unnecessary info from Container type and
@@ -157,10 +236,12 @@ func containersToTasks(ll []container) ([]task.Task, error) {
 		}
 		srv, dom := dnsPartsFromLabels(c.Labels)
 		out[i] = task.Task{
-			Id:      c.Id,
-			Ports:   ports,
-			Service: srv,
-			Domain:  dom,
+			Id:       c.Id,
+			Names:    c.Names,
+			Ports:    ports,
+			Service:  srv,
+			Domain:   dom,
+			Networks: c.NetworkSettings.Networks,
 		}
 	}
 	return out, nil
@@ -231,4 +312,34 @@ func toPort(p containerPort) (task.Port, error) {
 		HostPort: p.PublicPort,
 		Proto:    p.Type,
 	}, nil
+}
+
+func containerInfoToPorts(ci containerInfo) []task.Port {
+	var tasks []task.Port
+	for k, _ := range ci.HostConfig.PortBindings {
+		data := strings.Split(k, "/")
+		if len(data) != 2 {
+			log.Printf("Format of PortBindings has probably changed, it shouled be 'port/protocol': %s", k)
+			continue
+		}
+
+		ip := net.ParseIP(ci.Node.IP)
+		if ip == nil {
+			log.Printf("cannont parse IP '%s'", ci.Node.IP)
+			continue
+		}
+
+		port, err := strconv.Atoi(data[0]) // port
+		if err != nil {
+			log.Printf("cannont convert string '%s' into a number", data[0])
+			continue
+		}
+		task := task.Port{
+			HostIP:   ip,
+			HostPort: port,
+			Proto:    data[1], // proto
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks
 }
