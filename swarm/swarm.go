@@ -155,7 +155,7 @@ func (s *Swarm) Tasks() (task.ClusterState, error) {
 
 			ports := containerInfoToPorts(*info)
 
-			if len(ports) > 0 {
+			if len(ports) == 0 {
 				log.Printf("[%s] Unable to get ports info: %s", name)
 				continue
 			}
